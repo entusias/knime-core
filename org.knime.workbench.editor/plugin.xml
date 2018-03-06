@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <?eclipse version="3.0"?>
 <plugin>
-   <extension-point id="metanode_porttype" name="Port Type for Metanode Wizard" schema="schema/metanode_portype.exsd"/>
-     <extension
+    <extension-point id="metanode_porttype" name="Port Type for Metanode Wizard" schema="schema/metanode_portype.exsd"/>
+    <extension
          point="org.eclipse.ui.commands">
       <category
             description="Commands available for the workflow editor"
@@ -143,8 +143,18 @@
             description="Select all of the nodes contained within the surrounding loop"
             id="knime.action.selectLoop"
             name="Select Loop"/>
-   </extension>
-   <extension
+      <command
+            categoryId="knime.command.category"
+            description="Unlink selected nodes"
+            id="knime.commands.unlinknodes"
+            name="Unlink selected nodes"/>
+      <command
+            categoryId="knime.command.category"
+            description="Link selected nodes"
+            id="knime.commands.linknodes"
+            name="Link selected nodes"/>
+    </extension>
+    <extension
          point="org.eclipse.ui.editors">
       <editor
             class="org.knime.workbench.editor2.WorkflowEditor"
@@ -155,19 +165,17 @@
             icon="icons/knime.png"
             id="org.knime.workbench.editor.WorkflowEditor"
             name="KNIME Workflow Editor"/>
-   </extension>
-   <extension
+    </extension>
+    <extension
          point="org.eclipse.ui.editorActions">
       <editorContribution
             id="org.knime.workbench.editor.editorContribution"
             targetID="org.knime.workbench.editor.WorkflowEditor">
-         <menu
-               id="org.knime.workbench.editor.menu"
-               label="Node"
-               path="additions">
-            <groupMarker name="group1"/>
-            <groupMarker name="group2">
-            </groupMarker>
+         <menu id="org.knime.workbench.editor.menu"
+                    label="Node"
+                    path="additions">
+                <groupMarker name="group1"/>
+                <groupMarker name="group2"/>
          </menu>
          <action
                class="org.knime.workbench.editor2.actions.delegates.ResumeLoopEditorAction"
@@ -202,6 +210,28 @@
                style="push"
                toolbarPath="org.knime.workbench.editor.menu/group1"
                tooltip="Do one loop step"/>
+         <action
+               class="org.knime.workbench.editor2.actions.delegates.UnlinkNodesEditorAction"
+               definitionId="knime.commands.unlinknodes"
+               disabledIcon="icons/link_nodes_disabled.png"
+               icon="icons/unlink_nodes.png"
+               id="org.knime.workbench.editor.actions.unlinkSelectedNodes"
+               label="Unlink selected nodes"
+               menubarPath="org.knime.workbench.editor.menu/group1"
+               style="push"
+               toolbarPath="org.knime.workbench.editor.menu/group1"
+               tooltip="Unlink selected nodes"/>
+         <action
+               class="org.knime.workbench.editor2.actions.delegates.LinkNodesEditorAction"
+               definitionId="knime.commands.linknodes"
+               disabledIcon="icons/link_nodes_disabled.png"
+               icon="icons/link_nodes.png"
+               id="org.knime.workbench.editor.actions.linkSelectedNodes"
+               label="Link selected nodes"
+               menubarPath="org.knime.workbench.editor.menu/group1"
+               style="push"
+               toolbarPath="org.knime.workbench.editor.menu/group1"
+               tooltip="Link selected nodes"/>
          <action
                class="org.knime.workbench.editor2.actions.delegates.HideNodeNamesEditorAction"
                definitionId="knime.commands.hideNodeNames"
@@ -553,43 +583,52 @@
             commandId="knime.commands.resumeloop"
             contextId="org.eclipse.ui.contexts.window"
             schemeId="org.eclipse.ui.defaultAcceleratorConfiguration"
-            sequence="M1+ALT+F8"/>  
+            sequence="M1+ALT+F8"/>
       <key
             commandId="knime.action.selectLoop"
             contextId="org.eclipse.ui.contexts.window"
             schemeId="org.eclipse.ui.defaultAcceleratorConfiguration"
-            sequence="M1+ALT+F10"/>            
+            sequence="M1+ALT+F10"/>
+      <key
+            commandId="knime.commands.unlinknodes"
+            contextId="org.eclipse.ui.contexts.window"
+            schemeId="org.eclipse.ui.defaultAcceleratorConfiguration"
+            sequence="M1+SHIFT+L"/>
+      <key
+            commandId="knime.commands.linknodes"
+            contextId="org.eclipse.ui.contexts.window"
+            schemeId="org.eclipse.ui.defaultAcceleratorConfiguration"
+            sequence="M1+L"/>
       <key
             commandId="knime.commands.editor.moveNodesUp"
             contextId="org.eclipse.ui.contexts.window"
             schemeId="org.eclipse.ui.defaultAcceleratorConfiguration"
-            sequence="M1+SHIFT+ARROW_UP"/> 
+            sequence="M1+SHIFT+ARROW_UP"/>
       <key
             commandId="knime.commands.editor.moveNodesDown"
             contextId="org.eclipse.ui.contexts.window"
             schemeId="org.eclipse.ui.defaultAcceleratorConfiguration"
-            sequence="M1+SHIFT+ARROW_DOWN"/>  
+            sequence="M1+SHIFT+ARROW_DOWN"/>
       <key
             commandId="knime.commands.editor.moveNodesLeft"
             contextId="org.eclipse.ui.contexts.window"
             schemeId="org.eclipse.ui.defaultAcceleratorConfiguration"
-            sequence="M1+SHIFT+ARROW_LEFT"/> 
+            sequence="M1+SHIFT+ARROW_LEFT"/>
       <key
             commandId="knime.commands.editor.moveNodesRight"
             contextId="org.eclipse.ui.contexts.window"
             schemeId="org.eclipse.ui.defaultAcceleratorConfiguration"
-            sequence="M1+SHIFT+ARROW_RIGHT"/> 
+            sequence="M1+SHIFT+ARROW_RIGHT"/>
       <key
             commandId="knime.commands.editor.bringToFront"
             contextId="org.eclipse.ui.contexts.window"
             schemeId="org.eclipse.ui.defaultAcceleratorConfiguration"
-            sequence="M1+SHIFT+PAGE_UP"/> 
+            sequence="M1+SHIFT+PAGE_UP"/>
       <key
             commandId="knime.commands.editor.sendToBack"
             contextId="org.eclipse.ui.contexts.window"
             schemeId="org.eclipse.ui.defaultAcceleratorConfiguration"
-            sequence="M1+SHIFT+PAGE_DOWN"/> 
-            
+            sequence="M1+SHIFT+PAGE_DOWN"/>
     </extension>
     <extension
          id="modelProvider"
@@ -602,8 +641,8 @@
       <enablement>
 			<instanceof value="org.eclipse.core.resources.IResource"/>
       </enablement>
-     </extension>
-     <extension
+    </extension>
+    <extension
             point="org.eclipse.ui.views">
          <view
             category="org.knime.workbench.ui.category"
@@ -617,16 +656,16 @@
             icon="icons/node_monitor.png"
             id="org.knime.workbench.nodemonitorview.nodemonitorview"
             name="Node Monitor"/>
-     </extension>
-     <extension
+    </extension>
+    <extension
            point="org.eclipse.ui.contexts">
         <context
               description="KNIME editor context, for key bindings for the knime perspective only"
               id="org.knime.workbench.editor.context"
               name="In KNIME perspective"
               parentId="org.eclipse.ui.contexts.window"/>
-     </extension>
-     <extension
+    </extension>
+    <extension
             point="org.knime.core.WizardNodeView">
          <wizardNodeView
             description="This browser uses the native system browser that SWT can use. In a typical environment this should be Internet Explorer on Windows and WebKit on Linux and Mac."
