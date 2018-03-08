@@ -52,11 +52,13 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
 import org.eclipse.jface.resource.ImageDescriptor;
 import org.knime.core.node.NodeLogger;
+import org.knime.core.node.port.PortType;
 import org.knime.core.node.workflow.ConnectionContainer;
 import org.knime.core.node.workflow.NodeContainer;
 import org.knime.core.node.workflow.NodeID;
@@ -64,6 +66,8 @@ import org.knime.core.node.workflow.NodeTimer;
 import org.knime.core.node.workflow.NodeUIInformation;
 import org.knime.core.node.workflow.WorkflowManager;
 import org.knime.core.ui.node.workflow.NodeContainerUI;
+import org.knime.core.ui.node.workflow.NodeInPortUI;
+import org.knime.core.ui.node.workflow.NodeOutPortUI;
 import org.knime.core.ui.node.workflow.WorkflowManagerUI;
 import org.knime.workbench.KNIMEEditorPlugin;
 import org.knime.workbench.core.util.ImageRepository;
@@ -79,6 +83,7 @@ public class LinkNodesAction extends AbstractNodeAction {
     static public final String ID = "knime.commands.linknodes";
 
     static private final NodeLogger LOGGER = NodeLogger.getLogger(LinkNodesAction.class);
+    static private final NodeSpatialComparator SPATIAL_COMPARATOR = new NodeSpatialComparator();
 
 
     /**
@@ -210,22 +215,13 @@ public class LinkNodesAction extends AbstractNodeAction {
         boolean[] hasDestination = new boolean[orderedNodes.size() - 1]; // indices are shifted by -1
         int currentIndex;
         int portLowWaterMark;
+
         for (int i = 0; i < (orderedNodes.size() - 1); i++) {
             currentIndex = i + 1;
 
             sourceNode = orderedNodes.get(i);
             portLowWaterMark = (sourceNode instanceof WorkflowManagerUI) ? 0 : 1;
             if (sourceNode.getNrOutPorts() > portLowWaterMark) {
-                final AvailablePort sourceOutPort = this.getUseablePort(sourceNode, false, rhett);
-
-                if (sourceOutPort == null) {
-                    LOGGER.error("Node " + sourceNode.getNameWithID() + " has no available outports.");
-
-                    rhett.clear();
-
-                    return rhett;
-                }
-
                 while (currentIndex < orderedNodes.size()) {
                     destinationNode = orderedNodes.get(currentIndex);
                     portLowWaterMark = (destinationNode instanceof WorkflowManagerUI) ? 0 : 1;
@@ -234,27 +230,15 @@ public class LinkNodesAction extends AbstractNodeAction {
                                         && (!this.nodesOverlapInXDomain(sourceNode, destinationNode)
                                         && (!this.nodeHasConnectionWithinSet(destinationNode,
                                                                              orderedNodes)))) {
-                        final AvailablePort destinationInPort = this.getUseablePort(destinationNode,
-                                                                                    true, rhett);
-                        final PlannedConnection pc;
+                        final PlannedConnection pc = this.createConnectionPlan(sourceNode, destinationNode,
+                                                                               rhett);
 
-                        if (destinationInPort == null) {
-                            LOGGER.error("Node " + destinationNode.getNameWithID()
-                                                 + " has no available inports.");
+                        if (pc != null) {
+                            hasDestination[currentIndex - 1] = true;
+                            rhett.add(pc);
 
-                            rhett.clear();
-
-                            return rhett;
+                            break;
                         }
-
-                        pc = new PlannedConnection(sourceNode, sourceOutPort.getPort(),
-                                                   destinationNode, destinationInPort.getPort(),
-                                                   destinationInPort.doesRequiresDetachmentEvent());
-
-                        hasDestination[currentIndex - 1] = true;
-                        rhett.add(pc);
-
-                        break;
                     }
 
                     currentIndex++;
@@ -264,7 +248,9 @@ public class LinkNodesAction extends AbstractNodeAction {
 
         /*
          * Now, find any with inports that are not connected in the plan and that are not the first node;
-         *  connect to the first previous node which has an outport.
+         *  connect to the first previous node which has an outport of the appropriate port type.
+         *
+         * Such situations may arise due certain spatial configurations.
          */
         for (int i = 1; i < orderedNodes.size(); i++) {
             if (!hasDestination[i - 1]) {
@@ -277,26 +263,19 @@ public class LinkNodesAction extends AbstractNodeAction {
                         portLowWaterMark = (sourceNode instanceof WorkflowManagerUI) ? 0 : 1;
 
                         if (sourceNode.getNrOutPorts() > portLowWaterMark) {
-                            break;
+                            final PlannedConnection pc = this.createConnectionPlan(sourceNode,
+                                                                                   destinationNode,
+                                                                                   rhett);
+
+                            if (pc != null) {
+                                // there's no existing reason to set this to true (it's not used afterwards)
+                                //      but i'm a fan of consistent state
+                                hasDestination[i - 1] = true;
+                                rhett.add(pc);
+
+                                break;
+                            }
                         }
-
-                        sourceNode = null;
-                    }
-
-                    if (sourceNode != null) {
-                        int sourcePort = (sourceNode instanceof WorkflowManagerUI) ? 0 : 1;
-                        int destinationPort = (destinationNode instanceof WorkflowManagerUI) ? 0 : 1;
-
-                        // we don't care at this point whether existing ports get overwritten, since
-                        //      we're in this block, we know we're not creating a conflcting plan for
-                        //      the inport
-                        final PlannedConnection pc = new PlannedConnection(sourceNode, sourcePort,
-                                                                           destinationNode, destinationPort);
-
-                        // there's no existing reason to set this to true (it's not used afterwards)
-                        //      but i'm a fan of consistent state
-                        hasDestination[i - 1] = true;
-                        rhett.add(pc);
                     }
                 }
             }
@@ -306,76 +285,149 @@ public class LinkNodesAction extends AbstractNodeAction {
     }
 
     /**
-     * @param node
-     * @param inport if true, then inports will be referenced and outports if false
+     * This is a variant on the logic that is in AbstractCreateNewConnectedNodeCommand.getMatchingPorts(...) -
+     *  consider making a generalized variation of that method accepting an instance of WorkflowManager as
+     *  method parameter, and putting that into a utilities class and potentially changing this to
+     *  act as a second round processing on the returned Map.
+     *
+     * @param source the source, traditionally spatially left, node
+     * @param destination the destination, traditionally spatially right, node
      * @param existingPlan the already existing planned connections
-     * @return an instance of AvailablePort containing the port to use and potentially whether this requires
-     *              a detaching event first (e.g the port is an inport and has an existing connection); the
-     *              priority is the first (in natural ordering) unused and unplanned port; if no such port
-     *              exists, then the first unplanned port; if still no such port exists, null is returned.
+     * @return an instance of PlannedConnection; this takes into account port types. The priority is the
+     *              first (in natural ordering) unused and unplanned port on source and desination side of
+     *              match port types; if no such connection possibility exists, then the first unplanned port
+     *              on each side of matching port types. If no connection plan could be determined under
+     *              these rules, a null is returned.
      */
-    protected AvailablePort getUseablePort(final NodeContainerUI node, final boolean inport,
-                                           final List<PlannedConnection> existingPlan) {
+    protected PlannedConnection createConnectionPlan(final NodeContainerUI source,
+                                                     final NodeContainerUI destination,
+                                                     final List<PlannedConnection> existingPlan) {
         final WorkflowManager wm = this.getManager();
-        final Set<ConnectionContainer> existingConnections = inport
-                                                              ? wm.getIncomingConnectionsFor(node.getID())
-                                                              : wm.getOutgoingConnectionsFor(node.getID());
-        final int portCount = inport ? node.getNrInPorts() : node.getNrOutPorts();
-        int port = (node instanceof WorkflowManagerUI) ? 0 : 1;
-        boolean exists;
+        final int sourceStartIndex = (source instanceof WorkflowManagerUI) ? 0 : 1;
+        final int sourcePortCount = source.getNrOutPorts();
+        final int destinationStartIndex = (destination instanceof WorkflowManagerUI) ? 0 : 1;
+        final int destinationPortCount = destination.getNrInPorts();
+        final Set<ConnectionContainer> existingOutConnections = wm.getOutgoingConnectionsFor(source.getID());
+        final Set<ConnectionContainer> existingInConnections
+                                                         = wm.getIncomingConnectionsFor(destination.getID());
+        NodeOutPortUI sourcePort;
+        PortType sourcePortType;
+        NodeInPortUI destinationPort;
+        PortType destinationPortType;
 
-        while (port < portCount) {
-            exists = false;
-            for (final ConnectionContainer cc : existingConnections) {
-                if ((inport && (cc.getDestPort() == port))
-                            || ((!inport) && (cc.getSourcePort() == port))) {
-                    exists = true;
+        for (int i = sourceStartIndex; i < sourcePortCount; i++) {
+            if (!this.portAlreadyHasConnection(source, i, false, existingPlan, existingOutConnections)) {
+                sourcePort = source.getOutPort(i);
+                sourcePortType = sourcePort.getPortType();
 
-                    break;
-                }
-            }
+                for (int j = destinationStartIndex; j < destinationPortCount; j++) {
+                    if (!this.portAlreadyHasConnection(destination, j, true, existingPlan,
+                                                       existingInConnections)) {
+                        destinationPort = destination.getInPort(j);
+                        destinationPortType = destinationPort.getPortType();
 
-            if (!exists) {
-                for (final PlannedConnection pc : existingPlan) {
-                    if ((inport && (pc.getDestinationInportIndex() == port))
-                                || ((!inport) && (pc.getSourceOutportIndex() == port))) {
-                        exists = true;
-
-                        break;
+                        if (sourcePortType.isSuperTypeOf(destinationPortType)) {
+                            return new PlannedConnection(source, i, destination, j);
+                        }
                     }
                 }
-
-                if (!exists) {
-                    return new AvailablePort(port);
-                }
             }
-
-            port++;
         }
 
-        // Ok - if we're still here, all free ports in the existing (pre-new-link-command-being-executed)
-        //      are already spoken for in the plan, so now just grab the first one that is not spoken
-        //      for in the new plan.
-        port = (node instanceof WorkflowManagerUI) ? 0 : 1;
-        while (port < portCount) {
-            exists = false;
-            for (final PlannedConnection pc : existingPlan) {
-                if ((inport && (pc.getDestinationInportIndex() == port))
-                            || ((!inport) && (pc.getSourceOutportIndex() == port))) {
-                    exists = true;
 
-                    break;
+        /*
+         * If we've made it to here, nothing was found in, taking "available existing" on source and
+         *  destination into account; try again ignoring existing on source.
+         */
+        for (int i = sourceStartIndex; i < sourcePortCount; i++) {
+            if (!this.portAlreadyHasConnection(source, i, false, existingPlan, null)) {
+                sourcePort = source.getOutPort(i);
+                sourcePortType = sourcePort.getPortType();
+
+                for (int j = destinationStartIndex; j < destinationPortCount; j++) {
+                    if (!this.portAlreadyHasConnection(destination, j, true, existingPlan,
+                                                       existingInConnections)) {
+                        destinationPort = destination.getInPort(j);
+                        destinationPortType = destinationPort.getPortType();
+
+                        if (sourcePortType.isSuperTypeOf(destinationPortType)) {
+                            return new PlannedConnection(source, i, destination, j);
+                        }
+                    }
                 }
             }
-
-            if (!exists) {
-                return new AvailablePort(port, inport);
-            }
-
-            port++;
         }
+
+
+
+        /*
+         * If we've made it to here, nothing was found in, taking "available existing" on source and
+         *  destination into account, and also ignoring existing on source but not destination; now
+         *  just try only taking the existing plan into affect and allowing for multiple outport
+         *  assignments as a last ditch effort.
+         */
+        for (int i = sourceStartIndex; i < sourcePortCount; i++) {
+            sourcePort = source.getOutPort(i);
+            sourcePortType = sourcePort.getPortType();
+
+            for (int j = destinationStartIndex; j < destinationPortCount; j++) {
+                if (!this.portAlreadyHasConnection(destination, j, true, existingPlan, null)) {
+                    destinationPort = destination.getInPort(j);
+                    destinationPortType = destinationPort.getPortType();
+
+                    if (sourcePortType.isSuperTypeOf(destinationPortType)) {
+                        final boolean mustDetach = this.portAlreadyHasConnection(destination, j, true, null,
+                                                                                 existingInConnections);
+
+                        return new PlannedConnection(source, i, destination, j, mustDetach);
+                    }
+                }
+            }
+        }
+
 
         return null;
+    }
+
+    /**
+     * @param node the node which either the source or destination of this connection (as clarified via
+     *                  the <code>inport</code> parameter value.) This value is ignored if existingPlan
+     *                  is null
+     * @param port
+     * @param inport true if we're considering the inport side (destination) of the connection,
+     *                  false for the outport
+     * @param existingPlan if non-null, these will be consulted in the existence determination
+     * @param existingConnections if non-null, these will be consulted in the existence determination
+     * @return true if the port,inport couplet exists in the existing connections set, false otherwise.
+     */
+    protected boolean portAlreadyHasConnection (final NodeContainerUI node,
+                                                final int port, final boolean inport,
+                                                final List<PlannedConnection> existingPlan,
+                                                final Set<ConnectionContainer> existingConnections) {
+        if (existingConnections != null) {
+            for (final ConnectionContainer cc : existingConnections) {
+                if ((inport && (cc.getDestPort() == port)) || ((!inport) && (cc.getSourcePort() == port))) {
+                    return true;
+                }
+            }
+        }
+
+        if (existingPlan != null) {
+            final NodeID nid = node.getID();
+
+            for (final PlannedConnection pc : existingPlan) {
+                if ((inport
+                            && pc.getDestinationNode().getID().equals(nid)
+                            && (pc.getDestinationInportIndex() == port))
+                     || ((!inport)
+                            && pc.getSourceNode().getID().equals(nid)
+                            && (pc.getSourceOutportIndex() == port))) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -391,8 +443,8 @@ public class LinkNodesAction extends AbstractNodeAction {
         final int node1x2 = bounds1[0] + bounds1[2];
         final int node2x2 = bounds2[0] + bounds2[2];
 
-        return (((bounds1[0] >= bounds2[0]) && (bounds2[0] <= node1x2))
-                    || ((bounds2[0] >= bounds1[0]) && (bounds1[0] <= node2x2)));
+        return (((bounds1[0] <= bounds2[0]) && (bounds2[0] <= node1x2))
+                    || ((bounds2[0] <= bounds1[0]) && (bounds1[0] <= node2x2)));
     }
 
     /**
@@ -432,6 +484,9 @@ public class LinkNodesAction extends AbstractNodeAction {
      */
     protected ScreenedSelectionSet screenNodeSelection(final NodeContainerEditPart[] nodes) {
         final NodeContainerUI[] spatialBounds = new NodeContainerUI[2];
+        final ArrayList<NodeContainerUI> validLeft = new ArrayList<>();
+        final ArrayList<NodeContainerUI> validRight = new ArrayList<>();
+        ArrayList<NodeContainerUI> discards;
         NodeContainerUI node;
         NodeUIInformation uiInfo;
         NodeUIInformation uiInfoToo;
@@ -446,93 +501,73 @@ public class LinkNodesAction extends AbstractNodeAction {
             canBeLeftMost = (node.getNrOutPorts() > portLowWaterMark);
             canBeRightMost = (node.getNrInPorts() > portLowWaterMark);
 
-            uiInfo = node.getUIInformation();
-            if ((uiInfo == null) || (uiInfo.getBounds() == null)) {
-                continue;
+            if (canBeLeftMost) {
+                validLeft.add(node);
             }
 
-            if ((spatialBounds[0] == null) && canBeLeftMost) {
-                if (spatialBounds[1] != null) {
-                    uiInfoToo = spatialBounds[1].getUIInformation();
-                    if (uiInfoToo.getBounds()[0] < uiInfo.getBounds()[0]) {
-                        spatialBounds[0] = spatialBounds[1];
-                        spatialBounds[1] = node;
-                    }
-                    else {
-                        spatialBounds[0] = node;
-                    }
-                }
-                else {
-                    spatialBounds[0] = node;
-                }
-            }
-            else if ((spatialBounds[1] == null) && canBeRightMost) {
-                if (spatialBounds[0] != null) {
-                    uiInfoToo = spatialBounds[0].getUIInformation();
-                    if (uiInfoToo.getBounds()[0] > uiInfo.getBounds()[0]) {
-                        spatialBounds[1] = spatialBounds[0];
-                        spatialBounds[0] = node;
-                    }
-                    else {
-                        spatialBounds[1] = node;
-                    }
-                }
-                else {
-                    spatialBounds[1] = node;
-                }
-            }
-            else if ((spatialBounds[0] != null) && (spatialBounds[1] != null)) {
-                if (canBeLeftMost) {
-                    uiInfoToo = spatialBounds[0].getUIInformation();
-                    if (uiInfoToo.getBounds()[0] > uiInfo.getBounds()[0]) {
-                        spatialBounds[0] = node;
-                    }
-                }
-
-                if ((spatialBounds[0] != node) && canBeRightMost) {
-                    uiInfoToo = spatialBounds[1].getUIInformation();
-                    if (uiInfoToo.getBounds()[0] < uiInfo.getBounds()[0]) {
-                        spatialBounds[1] = node;
-                    }
-                }
+            if (canBeRightMost) {
+                validRight.add(node);
             }
         }
 
-        final ArrayList<NodeContainerUI> connectableNodes = new ArrayList<>();
-        if ((spatialBounds[0] == null) || (spatialBounds[1] == null)) {
-            return new ScreenedSelectionSet(connectableNodes, spatialBounds[0], spatialBounds[1]);
+        final HashSet<NodeContainerUI> connectableNodes = new HashSet<>();
+        if ((validLeft.size() == 0) || (validRight.size() == 0)) {
+            return new ScreenedSelectionSet(connectableNodes, null, null);
         }
 
-        final int leftBound = spatialBounds[0].getUIInformation().getBounds()[0];
-        final int rightBound = spatialBounds[1].getUIInformation().getBounds()[0];
-        boolean discard;
-        for (int i = 0; i < nodes.length; i++) {
-            node = nodes[i].getNodeContainer();
-            uiInfo = node.getUIInformation();
-            if ((uiInfo == null) || (uiInfo.getBounds() == null)) {
-                continue;
+        try {
+            Collections.sort(validLeft, SPATIAL_COMPARATOR);
+            Collections.sort(validRight, SPATIAL_COMPARATOR);
+        }
+        catch (NullPointerException e) {
+            // This sneaky way assures us that we have UI bounds information for the rest of this screening
+            //          code
+            LOGGER.warn("Some nodes in the current selection returned invalid UI information.");
+
+            return new ScreenedSelectionSet(connectableNodes, null, null);
+        }
+
+        spatialBounds[0] = validLeft.get(0);
+        spatialBounds[1] = validRight.get(validRight.size() - 1);
+
+        discards = new ArrayList<>();
+        uiInfo = spatialBounds[1].getUIInformation();
+        for (int i = (validLeft.size() - 1); i >= 0; i--) {
+            node = validLeft.get(i);
+            uiInfoToo = node.getUIInformation();
+
+            if (uiInfoToo.getBounds()[0] < uiInfo.getBounds()[0]) {
+                break;
             }
 
             portLowWaterMark = (node instanceof WorkflowManagerUI) ? 0 : 1;
-            if ((uiInfo.getBounds()[0] >= leftBound) && (uiInfo.getBounds()[0] <= rightBound)) {
-                discard = false;
-
-                if (uiInfo.getBounds()[0] == leftBound) {
-                   if (node.getNrOutPorts() == portLowWaterMark) {
-                       discard = true;
-                   }
-                }
-                else if (uiInfo.getBounds()[0] == rightBound) {
-                    if (node.getNrInPorts() == portLowWaterMark) {
-                        discard = true;
-                    }
-                }
-
-                if (!discard) {
-                    connectableNodes.add(node);
-                }
+            if (node.getNrOutPorts() == portLowWaterMark) {
+                discards.add(node);
             }
         }
+        validLeft.removeAll(discards);
+
+        discards = new ArrayList<>();
+        uiInfo = spatialBounds[0].getUIInformation();
+        for (int i = (validRight.size() - 1); i >= 0; i--) {
+            node = validRight.get(i);
+            uiInfoToo = node.getUIInformation();
+
+            if (uiInfoToo.getBounds()[0] > uiInfo.getBounds()[0]) {
+                break;
+            }
+
+            portLowWaterMark = (node instanceof WorkflowManagerUI) ? 0 : 1;
+            if (node.getNrInPorts() == portLowWaterMark) {
+                discards.add(node);
+            }
+        }
+        validRight.removeAll(discards);
+
+        // cramming them into a HashSet rids us of the problem that there will usually be a non-null
+        //      intersection between the valid left and valid right sets of nodes.
+        connectableNodes.addAll(validLeft);
+        connectableNodes.addAll(validRight);
 
         return new ScreenedSelectionSet(connectableNodes, spatialBounds[0], spatialBounds[1]);
     }
@@ -550,7 +585,7 @@ public class LinkNodesAction extends AbstractNodeAction {
             this.spatiallyLeftMostNode = left;
             this.spatiallyRightMostNode = right;
 
-            Collections.sort(this.connectableNodes, new NodeSpatialComparator());
+            Collections.sort(this.connectableNodes, SPATIAL_COMPARATOR);
         }
 
         private boolean setIsConnectable() {
@@ -642,35 +677,11 @@ public class LinkNodesAction extends AbstractNodeAction {
             return this.detachDestinationFirst;
         }
 
-    }
-
-
-    static private class AvailablePort {
-
-        final private int port;
-        final private boolean requiresDetachmentEvent;
-
-        private AvailablePort (final int availablePort) {
-            this(availablePort, false);
-        }
-
-        private AvailablePort (final int availablePort, final boolean detachFirst) {
-            this.port = availablePort;
-            this.requiresDetachmentEvent = detachFirst;
-        }
-
-        /**
-         * @return the port
-         */
-        private int getPort() {
-            return this.port;
-        }
-
-        /**
-         * @return the requiresDetachmentEvent
-         */
-        private boolean doesRequiresDetachmentEvent() {
-            return this.requiresDetachmentEvent;
+        @Override
+        public String toString() {
+            return this.sourceNode.getNameWithID() + ":" + this.sourceOutportIndex + " -> "
+                        + this.destinationNode.getNameWithID() + ":" + this.destinationInportIndex
+                        + (this.detachDestinationFirst ? " [DETACH]" : "");
         }
 
     }
