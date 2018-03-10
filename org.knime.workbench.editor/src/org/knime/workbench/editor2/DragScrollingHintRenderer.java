@@ -57,18 +57,16 @@ import org.eclipse.gef.GraphicalViewer;
 import org.eclipse.swt.events.MouseEvent;
 import org.eclipse.swt.events.MouseListener;
 import org.eclipse.swt.events.MouseMoveListener;
+import org.eclipse.swt.events.SelectionEvent;
+import org.eclipse.swt.events.SelectionListener;
 import org.eclipse.swt.graphics.Color;
 import org.knime.workbench.editor2.figures.WorkflowFigure;
 
 /**
  * This class exists to provide a render hint to the workflow editor user when they are dragging so that
  *      they are made aware that the canvas will auto-scroll.
- *
- * TODO we need to be a scroll listener as potentially the drag could not change but a scrolling (and there
- *      by location change of the viewport) will occur. This is hard to implement currently since i do
- *      not see auto-scrolling behaviour.)
  */
-class DragScrollingHintRenderer implements MouseListener, MouseMoveListener {
+class DragScrollingHintRenderer implements MouseListener, MouseMoveListener, SelectionListener {
 
     static private final float SPATIAL_ZONE_PERCENTAGE = 0.1f;
     static private final float SPATIAL_INSET_PERCENTAGE = 0.165f;
@@ -115,6 +113,10 @@ class DragScrollingHintRenderer implements MouseListener, MouseMoveListener {
 
         this.backingCanvas.addMouseListener(this);
         this.backingCanvas.addMouseMoveListener(this);
+
+        // See comments on widgetSelected(SelectionEvent)
+        this.backingCanvas.getHorizontalBar().addSelectionListener(this);
+        this.backingCanvas.getVerticalBar().addSelectionListener(this);
 
         this.rootFigure = figure;
 
@@ -180,15 +182,15 @@ class DragScrollingHintRenderer implements MouseListener, MouseMoveListener {
      * {@inheritDoc}
      */
     @Override
-    public void mouseMove(final MouseEvent e) {
+    public void mouseMove(final MouseEvent me) {
         if (this.weAreInADrag) {
             final Rectangle bounds = this.backingCanvas.getViewport().getBounds();
             final boolean[] renders = new boolean[4];
 
-            renders[NORTH] = (e.y <= (this.renderSpatialThresholds[NORTH] + bounds.y));
-            renders[WEST] = (e.x <= (this.renderSpatialThresholds[WEST] + bounds.x));
-            renders[SOUTH] = (e.y >= (this.renderSpatialThresholds[SOUTH] + bounds.y));
-            renders[EAST] = (e.x >= (this.renderSpatialThresholds[EAST] + bounds.x));
+            renders[NORTH] = (me.y <= (this.renderSpatialThresholds[NORTH] + bounds.y));
+            renders[WEST] = (me.x <= (this.renderSpatialThresholds[WEST] + bounds.x));
+            renders[SOUTH] = (me.y >= (this.renderSpatialThresholds[SOUTH] + bounds.y));
+            renders[EAST] = (me.x >= (this.renderSpatialThresholds[EAST] + bounds.x));
 
             for (int i = 0; i < 4; i++) {
                 if (renders[i]) {
@@ -211,13 +213,13 @@ class DragScrollingHintRenderer implements MouseListener, MouseMoveListener {
      * {@inheritDoc}
      */
     @Override
-    public void mouseDoubleClick(final MouseEvent e) { } // NOPMD
+    public void mouseDoubleClick(final MouseEvent me) { } // NOPMD
 
     /**
      * {@inheritDoc}
      */
     @Override
-    public void mouseDown(final MouseEvent e) {
+    public void mouseDown(final MouseEvent me) {
         final Rectangle viewportBounds;
 
         this.weAreInADrag = true;
@@ -245,7 +247,7 @@ class DragScrollingHintRenderer implements MouseListener, MouseMoveListener {
      * {@inheritDoc}
      */
     @Override
-    public void mouseUp(final MouseEvent e) {
+    public void mouseUp(final MouseEvent me) {
         this.weAreInADrag = false;
 
         this.renderSpatialThresholds = null;
@@ -258,6 +260,43 @@ class DragScrollingHintRenderer implements MouseListener, MouseMoveListener {
             }
         }
         this.currentlyDisplayedRegions = null;
+    }
+
+//static private final NodeLogger LOGGER = NodeLogger.getLogger(DragScrollingHintRenderer.class);
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void widgetSelected(final SelectionEvent se) {
+        /*
+         * We need to be a scroll listener as potentially the drag could not change but a scrolling (and
+         *  thereby location change of the viewport) will occur.
+         *
+         * I've written something that should work, but it's hard to tell both because of SWT's
+         *  handling of scrolling notifications, and more vitally since i do not see auto-scrolling
+         *  behaviour on Mac.
+         * I am suspicious that i see no notifications here when the scrollbars themselves auto-appear
+         *  and change range, but i suppose that is not technically scrolling behaviour.
+         */
+//LOGGER.warn("widget selected: " + se);
+        if (this.weAreInADrag) {
+            final Rectangle bounds = this.backingCanvas.getViewport().getBounds();
+
+            for (int i = 0; i < 4; i++) {
+                if (this.currentlyDisplayedRegions[i] != null) {
+                    this.updateLocation(bounds, i);
+                }
+            }
+        }
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void widgetDefaultSelected(final SelectionEvent se) {
+        this.widgetSelected(se);
     }
 
 
