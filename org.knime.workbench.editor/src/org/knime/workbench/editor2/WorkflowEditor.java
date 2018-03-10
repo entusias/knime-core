@@ -314,6 +314,7 @@ public class WorkflowEditor extends GraphicalEditor implements
     private List<String> m_editorActions;
 
     private GraphicalViewer m_graphicalViewer;
+    private DragScrollingHintRenderer m_scrollingHintRenderer;
 
     /** path to the workflow directory (that contains the workflow.knime file). */
     private URI m_fileResource;
@@ -844,6 +845,7 @@ public class WorkflowEditor extends GraphicalEditor implements
      *      #createGraphicalViewer(org.eclipse.swt.widgets.Composite)
      * @param parent The parent
      */
+    @SuppressWarnings("restriction") // WorkbenchHelpSystem.getInstance().setHelp(...) is discouraged API
     @Override
     protected void createGraphicalViewer(final Composite parent) {
         IEditorSite editorSite = getEditorSite();
@@ -887,10 +889,11 @@ public class WorkflowEditor extends GraphicalEditor implements
         updateEditorBackgroundColor();
         updateJobManagerDisplay();
         updateTempRemoteWorkflowMessage();
-        ((WorkflowRootEditPart)getGraphicalViewer().getRootEditPart()
-                .getChildren().get(0))
-                .createToolTipHelper(getSite().getShell());
+        RootEditPart rep = getGraphicalViewer().getRootEditPart();
+        ((WorkflowRootEditPart)rep.getChildren().get(0)).createToolTipHelper(getSite().getShell());
 
+        WorkflowFigure figure = ((WorkflowRootEditPart)rep.getContents()).getFigure();
+        m_scrollingHintRenderer = new DragScrollingHintRenderer(getGraphicalViewer(), figure);
     }
 
     /**
