@@ -58,20 +58,26 @@ import org.eclipse.swt.events.MouseEvent;
 import org.eclipse.swt.events.MouseListener;
 import org.eclipse.swt.events.MouseMoveListener;
 import org.eclipse.swt.graphics.Color;
-import org.knime.core.node.NodeLogger;
 import org.knime.workbench.editor2.figures.WorkflowFigure;
 
 /**
  * This class exists to provide a render hint to the workflow editor user when they are dragging so that
  *      they are made aware that the canvas will auto-scroll.
+ *
+ * TODO we need to be a scroll listener as potentially the drag could not change but a scrolling (and there
+ *      by location change of the viewport) will occur. This is hard to implement currently since i do
+ *      not see auto-scrolling behaviour.)
  */
 class DragScrollingHintRenderer implements MouseListener, MouseMoveListener {
 
-    static private final NodeLogger LOGGER = NodeLogger.getLogger(DragScrollingHintRenderer.class);
-
     static private final float SPATIAL_ZONE_PERCENTAGE = 0.1f;
+    static private final float SPATIAL_INSET_PERCENTAGE = 0.165f;
 
-    static private final Dimension CORNER_DIMENSION = new Dimension(5, 3);
+    static private final int MIN_HINT_ZONE_ALPHA = 11;
+    static private final int MAX_HINT_ZONE_ALPHA = 136;
+    static private final int ALPHA_TWEAK_ANIMATION_SLEEP = 76;
+
+    static private final Dimension CORNER_DIMENSION = new Dimension(7, 7);
 
     // Makes for better code readability
     static private final int NORTH = 0;
@@ -85,15 +91,21 @@ class DragScrollingHintRenderer implements MouseListener, MouseMoveListener {
 
     final private Color fillColor;
 
+    private RoundedRectangle[] currentlyDisplayedRegions;
+
     // This will only be consulted from the SWT thread, so i'm content making it neither volatile nor
     //  AtomicBoolean
     private boolean weAreInADrag;
+
+
+    // We cache these at mouse-down time to save calculation time during the drag
 
     // Similarly, this will only be interacted with on the SWT thread; the indices represent N,W,S,E.
     private int[] renderSpatialThresholds;
     // Similarly ...; this is used to store the reduced width, 0, or height, 1, of a highlight region.
     private int[] renderDimensions;
-    private RoundedRectangle[] currentlyDisplayedRegions;
+    private int[] locationInsetOffsets;
+
 
     /**
      * @param viewer we assume this instance is being created by WorkflowGraphicalViewerCreator
@@ -116,19 +128,51 @@ class DragScrollingHintRenderer implements MouseListener, MouseMoveListener {
         rhett.setFill(true);
         rhett.setBackgroundColor(this.fillColor);
         rhett.setCornerDimensions(CORNER_DIMENSION);
+        rhett.setAlpha(MIN_HINT_ZONE_ALPHA);
 
         switch (side) {
             case NORTH:
             case SOUTH:
-                rhett.setPreferredSize(viewportBounds.width, this.renderDimensions[1]);
+                rhett.setPreferredSize((viewportBounds.width - (2 * this.locationInsetOffsets[0])),
+                                       this.renderDimensions[1]);
                 break;
             default:
-                rhett.setPreferredSize(this.renderDimensions[0], viewportBounds.height);
+                rhett.setPreferredSize(this.renderDimensions[0],
+                                       (viewportBounds.height - (2 * this.locationInsetOffsets[1])));
                 break;
         }
 
+        this.rootFigure.add(rhett);
+        this.backingCanvas.getDisplay().timerExec(ALPHA_TWEAK_ANIMATION_SLEEP, new AlphaTweaker(side, 5));
 
         return rhett;
+    }
+
+    // This will always be called on the SWT thread
+    private void updateLocation (final Rectangle viewportBounds, final int side) {
+        final int x;
+        final int y;
+
+        switch (side) {
+            case NORTH:
+                x = viewportBounds.x + this.locationInsetOffsets[0];
+                y = viewportBounds.y;
+                break;
+            case SOUTH:
+                x = viewportBounds.x + this.locationInsetOffsets[0];
+                y = viewportBounds.y + viewportBounds.height - this.renderDimensions[1];
+                break;
+            case WEST:
+                x = viewportBounds.x;
+                y = viewportBounds.y + this.locationInsetOffsets[1];
+                break;
+            default:
+                x = viewportBounds.x + viewportBounds.width - this.renderDimensions[0];
+                y = viewportBounds.y + this.locationInsetOffsets[1];
+                break;
+        }
+
+        this.currentlyDisplayedRegions[side].setLocation(new Point(x, y));
     }
 
 
@@ -139,87 +183,26 @@ class DragScrollingHintRenderer implements MouseListener, MouseMoveListener {
     public void mouseMove(final MouseEvent e) {
         if (this.weAreInADrag) {
             final Rectangle bounds = this.backingCanvas.getViewport().getBounds();
-            final boolean renderNorth = (e.y <= (this.renderSpatialThresholds[NORTH] + bounds.y));
-            final boolean renderWest = (e.x <= (this.renderSpatialThresholds[WEST] + bounds.x));
-            final boolean renderSouth = (e.y >= (this.renderSpatialThresholds[SOUTH] + bounds.y));
-            final boolean renderEast = (e.x >= (this.renderSpatialThresholds[EAST] + bounds.x));
+            final boolean[] renders = new boolean[4];
 
-            // TODO we need to be a scroll listener as potentially the drag could not change but
-            //          a scrolling may go on (hard to tell since the scroll doesn't work for me)
+            renders[NORTH] = (e.y <= (this.renderSpatialThresholds[NORTH] + bounds.y));
+            renders[WEST] = (e.x <= (this.renderSpatialThresholds[WEST] + bounds.x));
+            renders[SOUTH] = (e.y >= (this.renderSpatialThresholds[SOUTH] + bounds.y));
+            renders[EAST] = (e.x >= (this.renderSpatialThresholds[EAST] + bounds.x));
 
+            for (int i = 0; i < 4; i++) {
+                if (renders[i]) {
+                    if (this.currentlyDisplayedRegions[i] == null) {
+                        this.currentlyDisplayedRegions[i] = this.makeRoundedRectangle(bounds, i);
+                    }
 
-            // TODO there's some abstraction which can be done here probably
-
-            if (renderNorth) {
-                if (this.currentlyDisplayedRegions[NORTH] == null) {
-                    this.currentlyDisplayedRegions[NORTH] = this.makeRoundedRectangle(bounds, NORTH);
-
-                    LOGGER.info("adding north");
-
-                    this.rootFigure.add(this.currentlyDisplayedRegions[NORTH]);
+                    this.updateLocation(bounds, i);
                 }
+                else if (this.currentlyDisplayedRegions[i] != null) {
+                    this.rootFigure.remove(this.currentlyDisplayedRegions[i]);
 
-                this.currentlyDisplayedRegions[NORTH].setLocation(bounds.getLocation());
-            }
-            else if (this.currentlyDisplayedRegions[NORTH] != null) {
-                this.rootFigure.remove(this.currentlyDisplayedRegions[NORTH]);
-
-                this.currentlyDisplayedRegions[NORTH] = null;
-            }
-
-            if (renderSouth) {
-                int y = bounds.y + bounds.height;
-
-                if (this.currentlyDisplayedRegions[SOUTH] == null) {
-                    this.currentlyDisplayedRegions[SOUTH] = this.makeRoundedRectangle(bounds, SOUTH);
-
-                    this.rootFigure.add(this.currentlyDisplayedRegions[SOUTH]);
+                    this.currentlyDisplayedRegions[i] = null;
                 }
-
-                y -= this.currentlyDisplayedRegions[SOUTH].getSize().height;
-
-                this.currentlyDisplayedRegions[SOUTH].setLocation(new Point(bounds.x, y));
-            }
-            else if (this.currentlyDisplayedRegions[SOUTH] != null) {
-                this.rootFigure.remove(this.currentlyDisplayedRegions[SOUTH]);
-
-                this.currentlyDisplayedRegions[SOUTH] = null;
-            }
-
-            if (renderWest) {
-                if (this.currentlyDisplayedRegions[WEST] == null) {
-                    this.currentlyDisplayedRegions[WEST] = this.makeRoundedRectangle(bounds, WEST);
-
-                    LOGGER.info("adding west");
-
-                    this.rootFigure.add(this.currentlyDisplayedRegions[WEST]);
-                }
-
-                this.currentlyDisplayedRegions[WEST].setLocation(bounds.getLocation());
-            }
-            else if (this.currentlyDisplayedRegions[WEST] != null) {
-                this.rootFigure.remove(this.currentlyDisplayedRegions[WEST]);
-
-                this.currentlyDisplayedRegions[WEST] = null;
-            }
-
-            if (renderEast) {
-                int x = bounds.x + bounds.width;
-
-                if (this.currentlyDisplayedRegions[EAST] == null) {
-                    this.currentlyDisplayedRegions[EAST] = this.makeRoundedRectangle(bounds, EAST);
-
-                    this.rootFigure.add(this.currentlyDisplayedRegions[EAST]);
-                }
-
-                x -= this.currentlyDisplayedRegions[EAST].getSize().width;
-
-                this.currentlyDisplayedRegions[EAST].setLocation(new Point(x, bounds.y));
-            }
-            else if (this.currentlyDisplayedRegions[EAST] != null) {
-                this.rootFigure.remove(this.currentlyDisplayedRegions[EAST]);
-
-                this.currentlyDisplayedRegions[EAST] = null;
             }
         }
     }
@@ -251,6 +234,10 @@ class DragScrollingHintRenderer implements MouseListener, MouseMoveListener {
         this.renderDimensions[0] = this.renderSpatialThresholds[WEST];
         this.renderDimensions[1] = this.renderSpatialThresholds[NORTH];
 
+        this.locationInsetOffsets = new int[2];
+        this.locationInsetOffsets[0] = (int)(SPATIAL_INSET_PERCENTAGE * viewportBounds.width);
+        this.locationInsetOffsets[1] = (int)(SPATIAL_INSET_PERCENTAGE * viewportBounds.height);
+
         this.currentlyDisplayedRegions = new RoundedRectangle[4];
     }
 
@@ -263,13 +250,63 @@ class DragScrollingHintRenderer implements MouseListener, MouseMoveListener {
 
         this.renderSpatialThresholds = null;
         this.renderDimensions = null;
+        this.locationInsetOffsets = null;
 
         for (int i = 0; i < 4; i++) {
             if (this.currentlyDisplayedRegions[i] != null) {
                 this.rootFigure.remove(this.currentlyDisplayedRegions[i]);
             }
         }
-        this.renderSpatialThresholds = null;
+        this.currentlyDisplayedRegions = null;
+    }
+
+
+    private class AlphaTweaker implements Runnable {
+
+        final protected int regionIndex;
+        final protected int alphaDelta;
+        protected boolean increasing;
+        protected int alpha;
+
+        private AlphaTweaker (final int index, final int delta) {
+            this.regionIndex = index;
+
+            this.alphaDelta = delta;
+
+            this.increasing = true;
+
+            this.alpha = MIN_HINT_ZONE_ALPHA;
+        }
+
+        @Override
+        public void run() {
+            final DragScrollingHintRenderer outer = DragScrollingHintRenderer.this;
+            final RoundedRectangle region = outer.currentlyDisplayedRegions[this.regionIndex];
+
+            if (region != null) {
+                region.setAlpha(this.alpha);
+
+                if (this.increasing) {
+                    this.alpha += this.alphaDelta;
+
+                    if (this.alpha > MAX_HINT_ZONE_ALPHA) {
+                        this.increasing = false;
+                        this.alpha = MAX_HINT_ZONE_ALPHA;
+                    }
+                }
+                else {
+                    this.alpha -= this.alphaDelta;
+
+                    if (this.alpha < MIN_HINT_ZONE_ALPHA) {
+                        this.increasing = true;
+                        this.alpha = MIN_HINT_ZONE_ALPHA;
+                    }
+                }
+
+                outer.backingCanvas.getDisplay().timerExec(ALPHA_TWEAK_ANIMATION_SLEEP, this);
+            }
+        }
+
     }
 
 }
