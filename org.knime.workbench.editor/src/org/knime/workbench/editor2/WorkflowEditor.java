@@ -892,8 +892,8 @@ public class WorkflowEditor extends GraphicalEditor implements
         RootEditPart rep = getGraphicalViewer().getRootEditPart();
         ((WorkflowRootEditPart)rep.getChildren().get(0)).createToolTipHelper(getSite().getShell());
 
-        WorkflowFigure figure = ((WorkflowRootEditPart)rep.getContents()).getFigure();
-        m_scrollingHintRenderer = new DragScrollingHintRenderer(getGraphicalViewer(), figure);
+//        WorkflowFigure figure = ((WorkflowRootEditPart)rep.getContents()).getFigure();
+//        m_scrollingHintRenderer = new DragScrollingHintRenderer(getGraphicalViewer(), figure);
     }
 
     /**
